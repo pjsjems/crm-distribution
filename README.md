@@ -1,0 +1,11 @@
+# CRM Ventes & Distribution
+
+Plateforme CRM multi-entreprises pour la vente et la distribution de boissons. Elle couvre le service à la clientèle, les enquêtes, les plaintes, les commandes, les dégustations, l'inspection, le TPM, la traçabilité, le marketing, les achats et la formation.
+
+- **Fichier publié :** `index.html`, une application d'une seule page, sans serveur, hébergée sur GitHub Pages.
+- **Données :** stockées dans Firebase Firestore, une organisation par entreprise cliente (`orgs/{organisation}`). **Ce dépôt ne contient aucune donnée d'entreprise.**
+- **Accès :** chaque appareil doit être enregistré une fois par un lien à usage unique, généré par l'administrateur. Un appareil non enregistré ne voit rien.
+- **Configuration :** `crm-config.js` contient la configuration web Firebase, qui n'est pas secrète. N'y mettez jamais de mot de passe ni de jeton.
+- **Sécurité serveur :** `firestore.rules`, à publier dans *Firestore → Rules*.
+
+Mise à jour de la plateforme : remplacez seulement `index.html`.

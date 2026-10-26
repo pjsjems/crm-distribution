@@ -1,0 +1,157 @@
+rules_version = '2';
+// =====================================================================
+// CRM SaaS — règles de sécurité Firestore (v16)
+// platform/root/...   super administrateurs de la plateforme
+// orgs/{org}/...      une entreprise cliente : appareils, liens, données
+// Aucun accès sans appareil enregistré (lien à usage unique).
+// =====================================================================
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+
+    // ----- super administrateur : appareil enregistré et actif -----
+    function isSA() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/platform/root/admins/$(request.auth.uid))
+        && get(/databases/$(database)/documents/platform/root/admins/$(request.auth.uid)).data.status == 'active';
+    }
+
+    // ----- membre d'une organisation : appareil actif + organisation active -----
+    function memberPath(org) { return /databases/$(database)/documents/orgs/$(org)/members/$(request.auth.uid); }
+    function isMember(org) {
+      return signedIn()
+        && exists(memberPath(org))
+        && get(memberPath(org)).data.status == 'active'
+        && get(/databases/$(database)/documents/orgs/$(org)).data.status == 'active';
+    }
+    function hasRole(org, roles) { return isMember(org) && get(memberPath(org)).data.role in roles; }
+    function isOrgAdmin(org) { return hasRole(org, ['admin']); }
+
+    // ----- lien d'enregistrement valide, consommé dans la même transaction -----
+    function invitePath(org, tok) { return /databases/$(database)/documents/orgs/$(org)/invites/$(tok); }
+    function orgInviteOk(org, tok) {
+      return tok is string && tok.size() >= 20
+        && exists(invitePath(org, tok))
+        && get(invitePath(org, tok)).data.used == false
+        && get(invitePath(org, tok)).data.expiresAt > request.time
+        && getAfter(invitePath(org, tok)).data.used == true
+        && getAfter(invitePath(org, tok)).data.usedBy == request.auth.uid;
+    }
+    function saInvitePath(tok) { return /databases/$(database)/documents/platform/root/invites/$(tok); }
+    function saInviteOk(tok) {
+      return tok is string && tok.size() >= 20
+        && exists(saInvitePath(tok))
+        && get(saInvitePath(tok)).data.used == false
+        && get(saInvitePath(tok)).data.role == 'superadmin'
+        && get(saInvitePath(tok)).data.expiresAt > request.time
+        && getAfter(saInvitePath(tok)).data.used == true
+        && getAfter(saInvitePath(tok)).data.usedBy == request.auth.uid;
+    }
+    function inviteFields() { return ['role','userId','label','orgName','expiresAt','used','createdBy','createdAt','usedBy','usedAt']; }
+    function consumeOnly() {
+      return resource.data.used == false && resource.data.expiresAt > request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['used','usedBy','usedAt'])
+        && request.resource.data.used == true && request.resource.data.usedBy == request.auth.uid;
+    }
+
+    // =================== PLATEFORME ===================
+    match /platform/{pid} {
+      allow read, write: if pid == 'root' && isSA();
+
+      match /admins/{uid} {
+        allow get: if (signedIn() && request.auth.uid == uid) || isSA();
+        allow list: if isSA();
+        // enregistrement (création, ou ré-enregistrement d'un appareil révoqué) avec un lien valide
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['status','token','name','device','enrolledAt','lastSeen'])
+          && request.resource.data.status == 'active'
+          && saInviteOk(request.resource.data.token);
+        // signal d'activité de l'appareil lui-même
+        allow update: if signedIn() && request.auth.uid == uid && resource.data.status == 'active'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSeen','device']);
+        // révocation par un super administrateur
+        allow update: if isSA();
+        allow delete: if false;
+      }
+
+      match /invites/{tok} {
+        allow get: if signedIn();
+        allow list, create, delete: if isSA();
+        allow update: if isSA()
+          || (signedIn() && consumeOnly()
+              && existsAfter(/databases/$(database)/documents/platform/root/admins/$(request.auth.uid)));
+      }
+    }
+
+    // =================== ORGANISATIONS ===================
+    match /orgs/{org} {
+      allow get: if isSA() || isMember(org);
+      allow list: if isSA();
+      allow create, update: if isSA();
+      allow delete: if false;
+
+      match /invites/{tok} {
+        allow get: if signedIn();
+        allow list: if isSA() || isOrgAdmin(org);
+        allow create: if (isSA() || isOrgAdmin(org))
+          && tok.size() >= 20
+          && request.resource.data.keys().hasOnly(inviteFields())
+          && request.resource.data.used == false
+          && request.resource.data.role in ['admin','manager','chef','agent']
+          && request.resource.data.expiresAt is timestamp;
+        allow update: if isSA() || isOrgAdmin(org)
+          || (signedIn() && consumeOnly() && existsAfter(memberPath(org)));
+        allow delete: if isSA() || isOrgAdmin(org);
+      }
+
+      match /members/{uid} {
+        allow get: if (signedIn() && request.auth.uid == uid) || isSA() || isOrgAdmin(org);
+        allow list: if isSA() || isOrgAdmin(org);
+        // enregistrement de l'appareil avec un lien valide : rôle et utilisateur imposés par le lien
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['role','userId','status','token','device','label','enrolledAt','lastSeen'])
+          && request.resource.data.status == 'active'
+          && orgInviteOk(org, request.resource.data.token)
+          && request.resource.data.role == get(invitePath(org, request.resource.data.token)).data.role
+          && request.resource.data.userId == get(invitePath(org, request.resource.data.token)).data.userId;
+        // signal d'activité de l'appareil lui-même
+        allow update: if signedIn() && request.auth.uid == uid && resource.data.status == 'active'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSeen','device']);
+        // révocation / changement de profil par l'administrateur
+        allow update: if isSA() || isOrgAdmin(org);
+        allow delete: if false;
+      }
+
+      // données synchronisées : un document par enregistrement, jamais effacé (pierre tombale del:true)
+      match /recs/{rid} {
+        allow read: if isSA() || isMember(org);
+        allow create, update: if (isSA() || isMember(org))
+          && request.resource.data.keys().hasOnly(['k','i','d','h','u','del','by','v'])
+          && request.resource.data.k is string && request.resource.data.k.size() < 200
+          && request.resource.data.i is string && request.resource.data.i.size() < 600
+          && request.resource.data.d is string && request.resource.data.d.size() < 1000000
+          && request.resource.data.h is string
+          && request.resource.data.del is bool
+          && request.resource.data.u == request.time
+          && request.resource.data.by == request.auth.uid
+          && (resource == null || (resource.data.k == request.resource.data.k && resource.data.i == request.resource.data.i))
+          && (!(request.resource.data.k in ['@db.users','@db.levels','@db.ui','@db.quotas','@db.teamQuotas','@db.delegLog'])
+              || isSA()
+              || hasRole(org, ['admin','manager','chef'])
+              || (request.resource.data.k == '@db.users' && request.resource.data.i == 'e:' + get(memberPath(org)).data.userId));
+        allow delete: if false;
+      }
+
+      // journal des actions sensibles
+      match /audit/{aid} {
+        allow create: if (isSA() || isMember(org))
+          && request.resource.data.keys().hasOnly(['act','data','by','at'])
+          && request.resource.data.by == request.auth.uid
+          && request.resource.data.at == request.time;
+        allow read: if isSA() || isOrgAdmin(org);
+        allow update, delete: if false;
+      }
+    }
+  }
+}
