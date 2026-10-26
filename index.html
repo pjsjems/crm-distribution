@@ -1370,6 +1370,10 @@ body.crm-gated #login,body.crm-gated #app,body.crm-pfmode #login,body.crm-pfmode
 
 .crm-dev a.btn,.crm-pfres a.btn{color:var(--ink)}
 .crm-menuthm::before{content:'';display:inline-block;width:15px;height:15px;margin-right:8px;vertical-align:-2px;border-radius:50%;background:linear-gradient(90deg,var(--ink) 50%,var(--surface) 50%);border:1.5px solid var(--ink)}
+.crm-pfwarn{border-color:var(--warn);background:var(--warn-s);margin-bottom:12px}.crm-pfwarn h3{margin:0 0 6px;font-size:15px}.crm-pfwarn p{margin:0;font-size:13px;line-height:1.5}
+.crm-pfacc .crm-pfsub{margin-top:14px}.crm-pfacc h4{margin:0 0 8px;font-size:14px}
+.crm-pfpw{padding:6px 2px}.crm-pfpw .crm-chk{display:flex;margin:3px 0}
+.crm-pill.warn{color:var(--warn);background:var(--warn-s);border-color:transparent}
 
 </style>
 </head>
@@ -1474,6 +1478,7 @@ async function credHash(org,userId,pwd){var e=new TextEncoder();var k=await cryp
   var bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt:e.encode('dcrm1|'+org+'|'+userId),iterations:120000},k,256);return 'p1$'+hex(bits)}
 function normUser(u){return String(u==null?'':u).trim().toLowerCase().replace(/[\/\s#?\[\]]+/g,'_').replace(/^\.+$/,'_').slice(0,80)}
 W.SAAS_credHash=credHash;W.SAAS_normUser=normUser;
+function genPwd(){for(var i=0;i<60;i++){var p=rnd(10);if(/[A-Za-z]/.test(p)&&/\d/.test(p))return p}return rnd(8)+'7a'}
 
 /* ---------- SHA-256 synchrone (empreintes des codes d'accès) ---------- */
 function sha256(str){
@@ -1498,6 +1503,7 @@ W.SAAS_codeHash=codeHash;
 /* ---------- empreinte rapide (FNV-1a 2 × 32 bits) ---------- */
 function fnv(s,seed){var h=seed>>>0;for(var i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return h>>>0}
 function hs(s){return fnv(s,2166136261).toString(36)+fnv(s,0x811c9dc5^0x5bd1e995).toString(36)}
+function recId(k,i){return String(k).replace(/[^A-Za-z0-9_.-]/g,'_').slice(0,48)+'~'+hs(k+'\u0001'+i)}
 
 /* ---------- organisation (tenant) ---------- */
 function tenantStore(org){return org==='bracour'?{key:'bracour-crm-v7',idb:'bracour-crm'}:{key:'crm-'+org+'-v7',idb:'crm-'+org}}
@@ -1589,11 +1595,12 @@ D.addEventListener('submit',async function(e){var f=e.target;if(!f||!f.closest||
     try{if(!fb)await loadFirebase();var dev=await doLogin(u,p);show('wait',{msg:tx('Chargement des données…','Loading data…')});await startOrg(dev)}
     catch(x){bt.disabled=false;bt.textContent=tx('Se connecter','Sign in');er.textContent=loginErr(x)}return}
   if(f.id==='crmForgotF'){var uf=D.getElementById('gf_u').value,ef=D.getElementById('gf_err'),bf=D.getElementById('gf_go');if(!uf.trim()){ef.textContent=tx('Saisissez votre nom utilisateur.','Enter your username.');return}
-    bf.disabled=true;try{if(!fb)await loadFirebase();await forgot(uf);show('forgotsent')}catch(x){bf.disabled=false;ef.textContent=fbCode(x)==='offline'||fbCode(x)==='unavailable'?tx('Pas de connexion Internet.','No Internet connection.'):tx('Demande impossible pour le moment. Réessayez.','Request not possible right now. Try again.')}}});
+    bf.disabled=true;try{if(!fb)await loadFirebase();await forgot(uf);show('forgotsent',{user:uf})}catch(x){bf.disabled=false;ef.textContent=loginErr(x)}}});
 function loginErr(x){var c=(x&&x.code)||'';
   if(c==='bad')return tx('Nom utilisateur ou mot de passe incorrect.','Incorrect username or password.');
   if(c==='blocked')return tx('Cet appareil a été bloqué par l\'administrateur.','This device was blocked by the administrator.');
   if(c==='nomig')return tx('Votre accès en ligne n\'est pas encore créé. Demandez un mot de passe à l\'administrateur de votre entreprise.','Your online access is not created yet. Ask your company administrator for a password.');
+  if(c==='rules')return tx('La plateforme est en cours de mise à jour : les règles de sécurité du serveur ne sont pas encore publiées. Contactez l\'administrateur de la plateforme.','The platform is being updated: the server security rules are not published yet. Contact the platform administrator.');
   if(c==='nocrypto')return tx('Ce navigateur ne permet pas une connexion sécurisée (HTTPS requis).','This browser cannot sign in securely (HTTPS required).');
   if(c==='offline'||c==='unavailable'||c==='sdk'||c==='auth'||!navigator.onLine)return tx('Pas de connexion Internet. Vérifiez la connexion puis réessayez.','No Internet connection. Check the connection and try again.');
   return tx('Connexion impossible : ','Sign-in failed: ')+(c||String(x&&x.message||x))}
@@ -1758,7 +1765,7 @@ function sessWhy(a,m){if(!a)return 'gone';if(a.active===false)return 'disabled';
    la session active du compte (une seule à la fois, sauf pour les administrateurs). */
 async function doLogin(uRaw,pwd){var f=fb,un=normUser(uRaw);if(!un||!pwd)throw err('bad');
   if(!W.crypto||!crypto.subtle)throw err('nocrypto');
-  var s=await timeout(f.getDoc(f.doc(f.db,'platform','root','unames',un)),20000,'unavailable');
+  var s;try{s=await timeout(f.getDoc(f.doc(f.db,'platform','root','unames',un)),20000,'unavailable')}catch(e){if(/permission-denied/.test(fbCode(e)))throw err('rules');throw e}
   var dev=lsGet(LS_DEV);
   if(!s.exists()&&dev&&dev.org&&!dev.platform&&dev.v!==17){await legacyMigrate(dev.org,un,pwd);s=await f.getDoc(f.doc(f.db,'platform','root','unames',un))}
   if(!s.exists())throw err('bad');
@@ -1787,7 +1794,7 @@ async function legacyMigrate(org,un,pwd){var f=fb,m=null;
   b.set(f.doc(f.db,'platform','root','unames',un),{org:org,userId:u.id,at:f.serverTimestamp(),by:UID});
   try{await b.commit()}catch(e){if(/permission-denied/.test(fbCode(e)))throw err('nomig');throw e}}
 /* mot de passe oublié : demande transmise à l'administrateur de l'entreprise */
-async function forgot(uRaw){var f=fb,un=normUser(uRaw);var s=await timeout(f.getDoc(f.doc(f.db,'platform','root','unames',un)),20000,'unavailable');if(!s.exists())return;var x=s.data();
+async function forgot(uRaw){var f=fb,un=normUser(uRaw);var s;try{s=await timeout(f.getDoc(f.doc(f.db,'platform','root','unames',un)),20000,'unavailable')}catch(e){if(/permission-denied/.test(fbCode(e)))throw err('rules');throw e}if(!s.exists())return;var x=s.data();
   await f.addDoc(f.collection(f.db,'orgs',x.org,'pwreq'),{userId:x.userId,username:un,at:f.serverTimestamp(),by:UID,device:devName()})}
 /* déconnexion : la session de cet appareil est fermée sur le serveur */
 async function signOut(){try{if(W.CRM_SYNC)await timeout(W.CRM_SYNC.flush(),8000,'t')}catch(e){}
@@ -1810,7 +1817,9 @@ function enrollMsg(c){return {invalid:tx('Ce lien n\'existe pas, a été annulé
 function parseEnroll(){var h=location.hash||'';var m=h.match(/crm-enroll=([^&]+)/);if(!m)return null;var v=decodeURIComponent(m[1]);var p=v.split('~');
   try{history.replaceState(null,'',location.pathname+location.search)}catch(e){location.hash=''}
   if(p.length!==2||!p[1])return null;return {scope:p[0],tok:p[1]}}
-function needLogin(dev,why){var u=(dev&&dev.username)||'';if(dev&&dev.v===17&&dev.out!==why){dev.out=why||'signedout';lsSet(LS_DEV,dev)}show('login',{user:u,note:whyMsg(why)})}
+function parseLoginHint(){var h=location.hash||'';var m=h.match(/crm-login=([^&]+)/);if(!m)return '';try{history.replaceState(null,'',location.pathname+location.search)}catch(e){location.hash=''}try{return normUser(decodeURIComponent(m[1]))}catch(e){return ''}}
+var LOGIN_HINT=parseLoginHint();
+function needLogin(dev,why){var u=LOGIN_HINT||(dev&&dev.username)||'';if(dev&&dev.v===17&&dev.out!==why){dev.out=why||'signedout';lsSet(LS_DEV,dev)}show('login',{user:u,note:whyMsg(why)})}
 async function startOnline(){
   var pend=parseEnroll();
   if(!FB_OK){show('config');return}
@@ -1829,8 +1838,8 @@ async function startOnline(){
     if(!ok){lsDel(LS_DEV);show('login',{});return}
     var sup=null;try{sup=sessionStorage.getItem(SS_SUPPORT)}catch(e){}
     if(sup)return startOrg({org:sup,uid:UID,role:'admin',userId:'',support:true});
-    return W.CRM_PLATFORM.open(fb,{uid:UID,cfg:CFG,tx:tx,esc:esc,rnd:rnd,codeHash:codeHash,credHash:credHash,normUser:normUser,monogram:monogram,mods:MODS,lang:lang,thmBtn:thmBtn,setLang:function(l){lsSet(LS_LANG,l)},show:show,wipe:function(org){return wipeTenantLocal(Object.assign({id:org},tenantStore(org)))}})}
-  if(dev&&dev.v===17&&dev.org&&!dev.out)return startOrg(dev);
+    return W.CRM_PLATFORM.open(fb,{uid:UID,cfg:CFG,tx:tx,esc:esc,rnd:rnd,codeHash:codeHash,credHash:credHash,normUser:normUser,genPwd:genPwd,recId:recId,hs:hs,monogram:monogram,mods:MODS,lang:lang,thmBtn:thmBtn,setLang:function(l){lsSet(LS_LANG,l)},show:show,wipe:function(org){return wipeTenantLocal(Object.assign({id:org},tenantStore(org)))}})}
+  if(dev&&dev.v===17&&dev.org&&!dev.out&&!(LOGIN_HINT&&LOGIN_HINT!==dev.username))return startOrg(dev);
   needLogin(dev&&dev.v===17?dev:null,dev&&dev.out)}
 async function startOrg(dev){var org=dev.org,st=tenantStore(org),acct=null;
   if(!dev.support){var m=null;
@@ -1862,7 +1871,7 @@ async function go(dev,info,offline,acct){var org=dev.org,st=tenantStore(org);
   bootApp()}
 function startLocal(){setTenant({id:'bracour',name:'Brasserie de la Couronne',short:'Bracour',legal:'Brasserie de la Couronne',key:'bracour-crm-v7',idb:'bracour-crm',mode:'local',online:false,brandSub:false,logo:'',company:null,licensed:null,member:null,support:false,platformName:PLATFORM});setBrand(T);setTitle();bootApp()}
 
-W.CRM_BOOT={cfg:CFG,mode:MODE,tx:tx,esc:esc,rnd:rnd,lang:lang,monogram:monogram,mods:MODS,codeHash:codeHash,credHash:credHash,normUser:normUser,thmBtn:thmBtn,applyTheme:applyTheme,
+W.CRM_BOOT={cfg:CFG,mode:MODE,tx:tx,esc:esc,rnd:rnd,genPwd:genPwd,recId:recId,lang:lang,monogram:monogram,mods:MODS,codeHash:codeHash,credHash:credHash,normUser:normUser,thmBtn:thmBtn,applyTheme:applyTheme,
   fb:function(){return fb},uid:function(){return UID},device:function(){return lsGet(LS_DEV)},revokeLocal:revokeLocal,wipeTenantLocal:wipeTenantLocal,tenantStore:tenantStore,signOut:signOut,kick:kick,
   exitSupport:function(){var org=T&&T.id;try{sessionStorage.removeItem(SS_SUPPORT);sessionStorage.removeItem(SS_ROUTE)}catch(e){}(org?wipeTenantLocal(Object.assign({id:org},tenantStore(org))):Promise.resolve()).then(function(){location.reload()})},
   start:function(){if(MODE==='local')startLocal();else startOnline().catch(function(e){console.error(e);show('offline',{detail:fbCode(e)})})}};
@@ -1878,7 +1887,7 @@ W.CRM_BOOT={cfg:CFG,mode:MODE,tx:tx,esc:esc,rnd:rnd,lang:lang,monogram:monogram,
 'use strict';
 var W=window,D=document;
 W.CRM_PLATFORM={open:function(fb,C){
-  var tx=C.tx,esc=C.esc,ST={tab:'orgs',orgs:[],admins:[],counts:{},edit:null,result:null,busy:false,msg:''};
+  var tx=C.tx,esc=C.esc,ST={tab:'orgs',orgs:[],admins:[],counts:{},reqs:{},edit:null,result:null,acc:null,busy:false,msg:'',rulesOld:false};
   var root=D.getElementById('crmPlatform');if(!root){root=D.createElement('section');root.id='crmPlatform';D.body.appendChild(root)}
   var g=D.getElementById('crmGate');if(g){g.hidden=true;g.innerHTML=''}D.body.classList.remove('crm-gated');D.body.classList.add('crm-pfmode');
   var base=location.origin+location.pathname;var PN='Distribution CRM';
@@ -1890,19 +1899,23 @@ W.CRM_PLATFORM={open:function(fb,C){
   async function load(){ST.busy=true;render();try{
       var s=await fb.getDocs(fb.collection(fb.db,'orgs'));ST.orgs=s.docs.map(function(d){return Object.assign({id:d.id},d.data())}).sort(function(a,b){return String(a.name||a.id).localeCompare(String(b.name||b.id))});
       for(var o of ST.orgs){try{var c=await fb.getCountFromServer(fb.query(fb.collection(fb.db,'orgs',o.id,'members'),fb.where('status','==','active')));ST.counts[o.id]=c.data().count}catch(e){ST.counts[o.id]='—'}}
-      var a=await fb.getDocs(fb.collection(fb.db,'platform','root','admins'));ST.admins=a.docs.map(function(d){return Object.assign({uid:d.id},d.data())});ST.msg=''}
+      for(var o2 of ST.orgs){try{var c2=await fb.getCountFromServer(fb.collection(fb.db,'orgs',o2.id,'pwreq'));ST.reqs[o2.id]=c2.data().count}catch(e){ST.reqs[o2.id]=0}}
+      var a=await fb.getDocs(fb.collection(fb.db,'platform','root','admins'));ST.admins=a.docs.map(function(d){return Object.assign({uid:d.id},d.data())});ST.msg='';
+      ST.rulesOld=false;try{await fb.getDoc(fb.doc(fb.db,'platform','root','unames','__check__'))}catch(e){if(/permission-denied/.test(e.code||''))ST.rulesOld=true}}
     catch(e){ST.msg=tx('Lecture impossible : ','Cannot read: ')+(e.code||e.message)}ST.busy=false;render()}
   function head(){return '<header class="crm-pfhead"><div class="brand"><img src="'+esc(C.monogram(C.cfg.platformName,'#2150C9'))+'" alt=""><div><b>'+esc(C.cfg.platformName)+'</b><small>'+tx('Console de la plateforme — super administrateur','Platform console — super administrator')+'</small></div></div>'+
     '<div class="crm-pfr"><div class="lang"><button type="button" data-pf="lang" data-v="fr" class="'+(C.lang()==='fr'?'on':'')+'">FR</button><button type="button" data-pf="lang" data-v="en" class="'+(C.lang()==='en'?'on':'')+'">EN</button></div>'+(C.thmBtn?C.thmBtn():'')+'</div></header>'}
   function tabs(){var t=[['orgs',tx('Organisations','Organizations')],['admins',tx('Super administrateurs','Super administrators')]];return '<div class="tabs" role="tablist">'+t.map(function(x){return '<button class="'+(ST.tab===x[0]?'on':'')+'" data-pf="tab" data-v="'+x[0]+'">'+esc(x[1])+'</button>'}).join('')+'</div>'}
   function orgsView(){var h='';
+    if(ST.rulesOld)h+='<div class="card crm-pfwarn"><h3>⚠️ '+tx('Règles de sécurité non à jour','Security rules not up to date')+'</h3><p>'+tx('Le serveur refuse la lecture des noms utilisateur : les règles Firestore v17 ne sont pas publiées. Sans elles, la connexion, le mot de passe oublié et la création des comptes échouent. Firebase Console → Firestore Database → Rules : collez le contenu complet de firestore.rules, puis cliquez sur Publish. Vérifiez qu\'aucune erreur rouge ne s\'affiche.','The server refuses to read usernames: the v17 Firestore rules are not published. Without them, sign-in, forgotten password and account creation fail. Firebase Console → Firestore Database → Rules: paste the full content of firestore.rules, then click Publish. Check that no red error appears.')+'</p></div>';
     if(ST.result)h+=resultCard();
     if(ST.edit)return h+orgForm();
+    if(ST.acc)return h+accessView();
     h+='<div class="crm-pfbar"><p class="lead" style="margin:0">'+tx('Chaque organisation est une entreprise cliente : ses données, ses utilisateurs et sa mise en page sont isolés des autres.','Each organization is a client company: its data, users and layout are isolated from the others.')+'</p><button class="btn primary" data-pf="new">＋ '+tx('Nouvelle organisation','New organization')+'</button></div>';
     if(!ST.orgs.length)return h+'<div class="card"><p class="crm-pfempty">'+(ST.busy?tx('Chargement…','Loading…'):tx('Aucune organisation. Créez la première (par exemple « bracour » pour la Brasserie de la Couronne).','No organization yet. Create the first one (for example "bracour" for Brasserie de la Couronne).'))+'</p></div>';
-    h+='<div class="card"><div class="tw"><table class="dt"><thead><tr><th>'+tx('Organisation','Organization')+'</th><th>'+tx('Statut','Status')+'</th><th>Modules</th><th>'+tx('Appareils actifs','Active devices')+'</th><th>'+tx('Créée le','Created')+'</th><th></th></tr></thead><tbody>'+
-      ST.orgs.map(function(o){var on=o.status==='active';return '<tr><td><b>'+esc(o.name||o.id)+'</b><br><small class="crm-mut">'+esc(o.id)+'</small></td><td><span class="crm-pill '+(on?'ok':'off')+'">'+(on?tx('Active','Active'):tx('Suspendue','Suspended'))+'</span></td><td>'+((o.modules||[]).length||'—')+'</td><td>'+esc(ST.counts[o.id]===undefined?'…':ST.counts[o.id])+'</td><td>'+esc(ts(o.createdAt))+'</td>'+
-        '<td class="crm-pfact"><button class="btn sm" data-pf="invite" data-o="'+esc(o.id)+'">🔑 '+tx('Accès administrateur','Administrator access')+'</button><button class="btn sm" data-pf="edit" data-o="'+esc(o.id)+'">'+tx('Modifier','Edit')+'</button><button class="btn sm" data-pf="status" data-o="'+esc(o.id)+'">'+(on?tx('Suspendre','Suspend'):tx('Réactiver','Reactivate'))+'</button><button class="btn sm" data-pf="support" data-o="'+esc(o.id)+'">'+tx('Ouvrir (support)','Open (support)')+'</button></td></tr>'}).join('')+'</tbody></table></div></div>';
+    h+='<div class="card"><div class="tw"><table class="dt"><thead><tr><th>'+tx('Organisation','Organization')+'</th><th>'+tx('Statut','Status')+'</th><th>Modules</th><th>'+tx('Appareils actifs','Active devices')+'</th><th>'+tx('Demandes','Requests')+'</th><th>'+tx('Créée le','Created')+'</th><th></th></tr></thead><tbody>'+
+      ST.orgs.map(function(o){var on=o.status==='active';return '<tr><td><b>'+esc(o.name||o.id)+'</b><br><small class="crm-mut">'+esc(o.id)+'</small></td><td><span class="crm-pill '+(on?'ok':'off')+'">'+(on?tx('Active','Active'):tx('Suspendue','Suspended'))+'</span></td><td>'+((o.modules||[]).length||'—')+'</td><td>'+esc(ST.counts[o.id]===undefined?'…':ST.counts[o.id])+'</td><td>'+(ST.reqs[o.id]?'<span class="crm-pill warn">🔑 '+ST.reqs[o.id]+'</span>':'')+'</td><td>'+esc(ts(o.createdAt))+'</td>'+
+        '<td class="crm-pfact"><button class="btn sm" data-pf="invite" data-o="'+esc(o.id)+'">🔑 '+tx('Accès','Access')+'</button><button class="btn sm" data-pf="edit" data-o="'+esc(o.id)+'">'+tx('Modifier','Edit')+'</button><button class="btn sm" data-pf="status" data-o="'+esc(o.id)+'">'+(on?tx('Suspendre','Suspend'):tx('Réactiver','Reactivate'))+'</button><button class="btn sm" data-pf="support" data-o="'+esc(o.id)+'">'+tx('Ouvrir (support)','Open (support)')+'</button></td></tr>'}).join('')+'</tbody></table></div></div>';
     return h}
   function fld(id,l,v,ph,ro){return '<div class="field"><label for="'+id+'">'+l+'</label><input class="input" id="'+id+'" value="'+esc(v||'')+'" placeholder="'+esc(ph||'')+'" '+(ro?'readonly':'')+'></div>'}
   function orgForm(){var o=ST.edit,isNew=!o.id||o._new,co=o.company||{},ad=o.bootstrapAdmin||{};var mods=o.modules||C.mods.filter(function(m){return m[0]!=='central'}).map(function(m){return m[0]});
@@ -1913,25 +1926,61 @@ W.CRM_PLATFORM={open:function(fb,C){
       '<p class="crm-mut">'+tx('Identifiant : lettres minuscules, chiffres et tirets (3 à 30). « bracour » est réservé à la Brasserie de la Couronne : son logo et ses libellés d\'origine sont conservés.','Identifier: lowercase letters, digits and hyphens (3 to 30). "bracour" is reserved for Brasserie de la Couronne: its original logo and labels are kept.')+'</p>'+
       '<div class="field"><label>'+tx('Logo','Logo')+'</label><div class="crm-pflogo"><img id="pf_logoimg" src="'+esc((o.brand&&o.brand.logo)||C.monogram(o.short||o.name||'?'))+'" alt=""><label class="btn sm">'+tx('Choisir une image…','Choose an image…')+'<input type="file" accept="image/*" id="pf_logo" hidden></label>'+((o.brand&&o.brand.logo)?'<button class="btn sm" type="button" data-pf="nologo">'+tx('Retirer','Remove')+'</button>':'')+'</div></div>'+
       '<div class="field"><label>'+tx('Modules autorisés','Licensed modules')+'</label><div class="crm-pfmods">'+C.mods.filter(function(m){return m[0]!=='central'}).map(function(m){return '<label class="crm-chk"><input type="checkbox" class="pf_mod" value="'+m[0]+'" '+(mods.indexOf(m[0])>=0?'checked':'')+'> '+esc(C.lang()==='en'?m[2]:m[1])+'</label>'}).join('')+'</div></div>'+
-      (isNew?'<div class="formgrid f2">'+fld('pf_aname',tx('Administrateur de l\'entreprise — nom complet *','Company administrator — full name *'),ad.name,'')+fld('pf_auser',tx('Nom utilisateur *','Username *'),ad.username,'ex. admin')+'</div><p class="crm-mut">'+tx('Un mot de passe temporaire est généré et affiché une seule fois. L\'administrateur le change à sa première connexion. Le nom utilisateur doit être unique sur toute la plateforme.','A temporary password is generated and shown only once. The administrator changes it at first sign-in. The username must be unique across the whole platform.')+'</p>':'')+
+      (isNew?'<div class="formgrid f2">'+fld('pf_aname',tx('Administrateur de l\'entreprise — nom complet *','Company administrator — full name *'),ad.name,'')+fld('pf_auser',tx('Nom utilisateur *','Username *'),ad.username,'ex. admin-acme')+'<div class="field"><label for="pf_apwd">'+tx('Mot de passe (généré automatiquement, modifiable)','Password (generated automatically, editable)')+'</label><input class="input" id="pf_apwd" value="'+esc(C.genPwd())+'" autocomplete="off" spellcheck="false"></div><div class="field"><label>'+tx('Type','Type')+'</label><label class="crm-chk"><input type="checkbox" id="pf_adef"> '+tx('Définitif (pas de changement à la 1re connexion)','Permanent (no change at first sign-in)')+'</label></div></div><p class="crm-mut">'+tx('Un mot de passe temporaire est généré et affiché une seule fois. L\'administrateur le change à sa première connexion. Le nom utilisateur doit être unique sur toute la plateforme.','A temporary password is generated and shown only once. The administrator changes it at first sign-in. The username must be unique across the whole platform.')+'</p>':'')+
       '<div class="crm-pfbtns"><button class="btn" data-pf="cancel">'+tx('Annuler','Cancel')+'</button><button class="btn primary" data-pf="save">'+(isNew?tx('Créer l\'organisation','Create organization'):tx('Enregistrer','Save'))+'</button></div></div>'}
-  function resultCard(){var r=ST.result;var msg;
-    if(r.pwd)msg=tx('Bonjour '+(r.who||'')+',\n\nVotre accès administrateur à '+PN+(r.short?' '+r.short:'')+' :\nLien : '+base+'\nNom utilisateur : '+r.username+'\nMot de passe temporaire : '+r.pwd+'\nVous choisirez votre mot de passe personnel à la première connexion.\n\nNe transmettez ce message à personne.',
-      'Hello '+(r.who||'')+',\n\nYour administrator access to '+PN+(r.short?' '+r.short:'')+':\nLink: '+base+'\nUsername: '+r.username+'\nTemporary password: '+r.pwd+'\nYou will choose your personal password at first sign-in.\n\nDo not share this message with anyone.');
+  function accessLink(un){return base+'#crm-login='+encodeURIComponent(un)}
+  function resultCard(){var r=ST.result;var msg,lk=r.pwd?accessLink(r.username):r.link;var adm=r.role==='admin'||!r.role;
+    if(r.pwd)msg=tx('Bonjour '+(r.who||'')+',\n\nVotre accès '+(adm?'administrateur ':'')+'à '+PN+(r.short?' '+r.short:'')+' :\nLien : '+lk+'\nNom utilisateur : '+r.username+'\nMot de passe'+(r.def?'':' temporaire')+' : '+r.pwd+'\n'+(r.def?'':'Vous choisirez votre mot de passe personnel à la première connexion.\n')+'\nNe transmettez ce message à personne.',
+      'Hello '+(r.who||'')+',\n\nYour '+(adm?'administrator ':'')+'access to '+PN+(r.short?' '+r.short:'')+':\nLink: '+lk+'\nUsername: '+r.username+'\n'+(r.def?'Password':'Temporary password')+': '+r.pwd+'\n'+(r.def?'':'You will choose your personal password at first sign-in.\n')+'\nDo not share this message with anyone.');
     else msg=tx('Bonjour '+(r.who||'')+',\n\nOuvrez une seule fois ce lien sur votre appareil pour l\'enregistrer comme super administrateur (valable '+C.cfg.inviteHours+' h, une seule utilisation) :\n'+r.link,'Hello '+(r.who||'')+',\n\nOpen this link once on your device to register it as super administrator (valid '+C.cfg.inviteHours+' h, single use):\n'+r.link);
+    var cp=function(l,v){return '<div class="field"><label>'+l+'</label><div class="crm-pfcopy"><input class="input" readonly value="'+esc(v)+'"><button class="btn sm" data-pf="copy" data-v="'+esc(v)+'">'+tx('Copier','Copy')+'</button></div></div>'};
     return '<div class="card crm-pfres"><div class="head"><h3>✅ '+esc(r.title)+'</h3><button class="btn sm" data-pf="closeres">✕</button></div>'+
-      (r.link?'<div class="field"><label>'+tx('Lien d\'enregistrement (une seule utilisation)','Registration link (single use)')+'</label><div class="crm-pfcopy"><input class="input" readonly value="'+esc(r.link)+'"><button class="btn sm" data-pf="copy" data-v="'+esc(r.link)+'">'+tx('Copier','Copy')+'</button></div></div>':'')+
-      (r.pwd?'<div class="formgrid f2"><div class="field"><label>'+tx('Nom utilisateur','Username')+'</label><div class="crm-pfcopy"><input class="input" readonly value="'+esc(r.username)+'"><button class="btn sm" data-pf="copy" data-v="'+esc(r.username)+'">'+tx('Copier','Copy')+'</button></div></div><div class="field"><label>'+tx('Mot de passe temporaire (affiché une seule fois)','Temporary password (shown only once)')+'</label><div class="crm-pfcopy"><input class="input" readonly value="'+esc(r.pwd)+'"><button class="btn sm" data-pf="copy" data-v="'+esc(r.pwd)+'">'+tx('Copier','Copy')+'</button></div></div></div>':'')+
+      (r.pwd?'<p class="crm-mut">'+tx('L\'accès est actif immédiatement. Le mot de passe n\'est affiché qu\'une seule fois : transmettez-le maintenant.','Access is active immediately. The password is shown only once: send it now.')+'</p>':'')+
+      cp(r.pwd?tx('Lien d\'accès (nom utilisateur prérempli)','Access link (username prefilled)'):tx('Lien d\'enregistrement (une seule utilisation)','Registration link (single use)'),lk)+
+      (r.pwd?'<div class="formgrid f2">'+cp(tx('Nom utilisateur','Username'),r.username)+cp(r.def?tx('Mot de passe','Password'):tx('Mot de passe temporaire','Temporary password'),r.pwd)+'</div>':'')+
       '<div class="field"><label>'+tx('Message à envoyer par un canal privé','Message to send through a private channel')+'</label><textarea class="input" rows="8" readonly>'+esc(msg)+'</textarea></div>'+
       '<div class="crm-pfbtns"><button class="btn" data-pf="copy" data-v="'+esc(msg)+'">'+tx('Copier le message','Copy message')+'</button><a class="btn" target="_blank" rel="noopener" href="https://wa.me/?text='+encodeURIComponent(msg)+'">WhatsApp</a><a class="btn" href="mailto:?subject='+encodeURIComponent(PN)+'&body='+encodeURIComponent(msg)+'">'+tx('Courriel','Email')+'</a></div></div>'}
   function genPwd(){for(var i=0;i<50;i++){var p=C.rnd(10);if(/[A-Za-z]/.test(p)&&/\d/.test(p))return p}return C.rnd(8)+'7a'}
   /* compte administrateur d'une organisation : compte en ligne + nom utilisateur unique */
-  async function adminAccess(org,userId,username,name){var un=C.normUser(username);var us=await fb.getDoc(fb.doc(fb.db,'platform','root','unames',un));
+  /* accès en ligne d'un utilisateur : actif dès l'enregistrement (empreinte + nom utilisateur unique) */
+  async function grant(org,userId,username,name,role,pwd,def){var un=C.normUser(username);var us=await fb.getDoc(fb.doc(fb.db,'platform','root','unames',un));
     if(us.exists()&&(us.data().org!==org||us.data().userId!==userId)){var e=new Error('conflict');e.code='conflict';throw e}
-    var pwd=genPwd();var cred=await C.credHash(org,userId,pwd);var b=fb.writeBatch(fb.db);
-    b.set(fb.doc(fb.db,'orgs',org,'accounts',userId),{username:un,name:name||'',role:'admin',active:true,cred:cred,mustChange:true,updatedAt:fb.serverTimestamp(),updatedBy:C.uid},{merge:true});
+    pwd=pwd||C.genPwd();var cred=await C.credHash(org,userId,pwd);var b=fb.writeBatch(fb.db);
+    b.set(fb.doc(fb.db,'orgs',org,'accounts',userId),{username:un,name:name||'',role:role||'admin',active:true,cred:cred,mustChange:!def,updatedAt:fb.serverTimestamp(),updatedBy:C.uid},{merge:true});
     if(!us.exists())b.set(fb.doc(fb.db,'platform','root','unames',un),{org:org,userId:userId,at:fb.serverTimestamp(),by:C.uid});
-    await b.commit();return {username:un,pwd:pwd}}
+    await b.commit();
+    try{var rq=await fb.getDocs(fb.query(fb.collection(fb.db,'orgs',org,'pwreq'),fb.where('userId','==',userId)));for(var d of rq.docs)await fb.deleteDoc(fb.doc(fb.db,'orgs',org,'pwreq',d.id))}catch(e2){}
+    fb.addDoc(fb.collection(fb.db,'orgs',org,'audit'),{act:'platform-access',data:{userId:userId,username:un},by:C.uid,at:fb.serverTimestamp()}).catch(function(){});
+    return {username:un,pwd:pwd,def:!!def}}
+  async function adminAccess(org,userId,username,name,pwd,def){return grant(org,userId,username,name,'admin',pwd,def)}
+  var goodPwd=function(p){return String(p||'').length>=8&&/[A-Za-z]/.test(p)&&/\d/.test(p)};
+  var levelOf=function(u){return u.role==='admin'?'admin':(u.level&&u.level!=='admin'?u.level:'agent')};
+  /* panneau « Accès » d'une organisation */
+  async function openAccess(org){ST.acc={org:org,loading:true,users:[],accounts:{},reqs:[],sel:null,newAdmin:false};ST.result=null;render();
+    var A=ST.acc;A.users=await orgUsers(org);
+    try{var s=await fb.getDocs(fb.collection(fb.db,'orgs',org,'accounts'));s.docs.forEach(function(d){A.accounts[d.id]=d.data()})}catch(e){}
+    try{var r=await fb.getDocs(fb.collection(fb.db,'orgs',org,'pwreq'));A.reqs=r.docs.map(function(d){return Object.assign({id:d.id},d.data())})}catch(e){}
+    var o=ST.orgs.find(function(x){return x.id===org})||{};A.fresh=!A.users.length;
+    if(!A.users.length&&o.bootstrapAdmin)A.users=[{id:'u0',name:o.bootstrapAdmin.name||'',username:o.bootstrapAdmin.username||'',role:'admin',level:'admin',active:true}];
+    A.users.sort(function(a,b){return (levelOf(a)==='admin'?0:1)-(levelOf(b)==='admin'?0:1)||String(a.name).localeCompare(String(b.name))});
+    A.loading=false;render()}
+  function accessView(){var A=ST.acc,o=ST.orgs.find(function(x){return x.id===A.org})||{};
+    var h='<div class="card crm-pfform crm-pfacc"><div class="head"><h3>🔑 '+tx('Accès — ','Access — ')+esc(o.name||A.org)+'</h3><button class="btn sm" data-pf="accclose">✕ '+tx('Fermer','Close')+'</button></div>';
+    if(A.loading)return h+'<p class="crm-mut">'+tx('Chargement…','Loading…')+'</p></div>';
+    h+='<p class="crm-mut">'+tx('Générez à tout moment un accès pour un administrateur (ou tout utilisateur) de cette entreprise : mot de passe automatique ou saisi à la main, temporaire ou définitif. L\'accès est actif dès qu\'il est enregistré ; l\'ancien mot de passe cesse de fonctionner.','Generate access at any time for an administrator (or any user) of this company: automatic or typed password, temporary or permanent. Access is active as soon as it is saved; the previous password stops working.')+'</p>';
+    if(A.reqs.length)h+='<div class="crm-pfsub"><h4>'+tx('Demandes de mot de passe oublié','Forgotten password requests')+' ('+A.reqs.length+')</h4><div class="tw"><table class="dt"><tbody>'+A.reqs.map(function(r){return '<tr><td><b>'+esc(r.username)+'</b></td><td>'+esc(ts(r.at))+'</td><td><small>'+esc(r.device||'')+'</small></td><td class="crm-pfact"><button class="btn sm primary" data-pf="accsel" data-u="'+esc(r.userId)+'">'+tx('Générer un accès','Generate access')+'</button><button class="btn sm" data-pf="reqdel" data-r="'+esc(r.id)+'">'+tx('Ignorer','Dismiss')+'</button></td></tr>'}).join('')+'</tbody></table></div></div>';
+    h+='<div class="crm-pfsub"><h4>'+tx('Utilisateurs de l\'entreprise','Company users')+'</h4><div class="tw"><table class="dt"><thead><tr><th>'+tx('Utilisateur','User')+'</th><th>'+tx('Niveau','Level')+'</th><th>'+tx('Accès en ligne','Online access')+'</th><th>'+tx('Dernière connexion','Last sign-in')+'</th><th></th></tr></thead><tbody>'+
+      A.users.map(function(u){var a=A.accounts[u.id],st=!a||!a.cred?['',tx('Sans accès','No access')]:a.active===false?['off',tx('Désactivé','Disabled')]:a.mustChange?['warn',tx('Mot de passe temporaire','Temporary password')]:['ok',tx('Actif','Active')];
+        return '<tr><td><b>'+esc(u.name||'')+'</b><br><small class="crm-mut">@'+esc(C.normUser(u.username))+(u.active===false?' · off':'')+'</small></td><td>'+esc(levelOf(u))+'</td><td><span class="crm-pill '+st[0]+'">'+esc(st[1])+'</span></td><td>'+esc(a?ts(a.sessionAt):'')+'</td><td class="crm-pfact"><button class="btn sm" data-pf="accsel" data-u="'+esc(u.id)+'">🔑 '+tx('Générer un accès','Generate access')+'</button></td></tr>'+(A.sel===u.id?'<tr class="crm-pwrow"><td colspan="5">'+pwForm('accgo',u.id)+'</td></tr>':'')}).join('')+'</tbody></table></div></div>';
+    h+='<div class="crm-pfsub">'+(A.newAdmin?'<h4>'+tx('Nouvel administrateur','New administrator')+'</h4><div class="formgrid f2">'+fld('pa_name',tx('Nom complet *','Full name *'),'','')+fld('pa_user',tx('Nom utilisateur *','Username *'),'','ex. admin-'+A.org)+'</div>'+pwForm('newgo',''):'<button class="btn" data-pf="accnew">＋ '+tx('Nouvel administrateur pour cette entreprise','New administrator for this company')+'</button>')+'</div>';
+    return h+'</div>'}
+  function pwForm(act,uid){return '<div class="crm-pfpw"><div class="formgrid f2"><div class="field"><label for="pa_pwd">'+tx('Mot de passe (généré automatiquement, modifiable)','Password (generated automatically, editable)')+'</label><input class="input" id="pa_pwd" value="'+esc(C.genPwd())+'" autocomplete="off" spellcheck="false"></div>'+
+    '<div class="field"><label>'+tx('Type','Type')+'</label><label class="crm-chk"><input type="radio" name="pa_t" value="tmp" checked> '+tx('Temporaire — à changer à la 1re connexion','Temporary — to change at first sign-in')+'</label><label class="crm-chk"><input type="radio" name="pa_t" value="def"> '+tx('Définitif','Permanent')+'</label></div></div>'+
+    '<div class="crm-pfbtns"><button class="btn" data-pf="acccancel">'+tx('Annuler','Cancel')+'</button><button class="btn primary" data-pf="'+act+'" data-u="'+esc(uid)+'">'+tx('Activer l\'accès','Activate access')+'</button></div></div>'}
+  function pwVal(){return {p:val('pa_pwd'),def:(D.querySelector('input[name="pa_t"]:checked')||{}).value==='def'}}
+  async function addUserRecord(org,user){var json=JSON.stringify(user);var i='e:'+user.id;
+    await fb.setDoc(fb.doc(fb.db,'orgs',org,'recs',C.recId('@db.users',i)),{k:'@db.users',i:i,d:json,h:C.hs(json),u:fb.serverTimestamp(),del:false,by:C.uid,v:1})}
+  function errTxt(err){return err&&err.code==='conflict'?tx('Ce nom utilisateur est déjà utilisé par une autre entreprise ou un autre utilisateur.','This username is already used by another company or user.'):tx('Échec : ','Failed: ')+((err&&(err.code||err.message))||err)}
   async function orgUsers(org){try{var s=await fb.getDocs(fb.query(fb.collection(fb.db,'orgs',org,'recs'),fb.where('k','==','@db.users')));var L=[];
       s.docs.forEach(function(d){var r=d.data();if(r.del||typeof r.d!=='string'||r.i.slice(0,2)!=='e:')return;try{var u=JSON.parse(r.d);if(u&&u.id)L.push(u)}catch(e){}});return L}catch(e){return []}}
   function adminsView(){var h=(ST.result?resultCard():'')+'<div class="crm-pfbar"><p class="lead" style="margin:0">'+tx('Les super administrateurs gèrent les organisations. Chaque appareil est enregistré par un lien à usage unique.','Super administrators manage organizations. Each device is registered through a single-use link.')+'</p><button class="btn primary" data-pf="sainvite">＋ '+tx('Inviter un super administrateur','Invite a super administrator')+'</button></div>';
@@ -1953,15 +2002,16 @@ W.CRM_PLATFORM={open:function(fb,C){
         var an=val('pf_aname'),au=val('pf_auser').toLowerCase();if(!an||!au){toast(tx('Nom et nom utilisateur de l\'administrateur requis.','Administrator name and username required.'));return}
         au=C.normUser(au);var tk=await fb.getDoc(fb.doc(fb.db,'platform','root','unames',au));if(tk.exists()){toast(tx('Ce nom utilisateur est déjà utilisé sur la plateforme.','This username is already used on the platform.'));return}
         data.bootstrapAdmin={name:an,username:au};data.status='active';data.createdAt=fb.serverTimestamp();data.createdBy=C.uid;data.plan='standard';
+        var apw=val('pf_apwd')||C.genPwd(),adef=!!(D.getElementById('pf_adef')||{}).checked;if(!goodPwd(apw)){toast(tx('Mot de passe : 8 caractères minimum, avec des lettres et des chiffres.','Password: at least 8 characters, with letters and digits.'));return}
         await fb.setDoc(fb.doc(fb.db,'orgs',id),data);
-        var acc=await adminAccess(id,'u0',au,an);
-        ST.result={title:tx('Organisation créée : ','Organization created: ')+name,pwd:acc.pwd,username:acc.username,who:an,short:short}}
+        try{var acc=await adminAccess(id,'u0',au,an,apw,adef);ST.result={title:tx('Organisation créée : ','Organization created: ')+name,pwd:acc.pwd,username:acc.username,who:an,short:short,def:acc.def,role:'admin'}}
+        catch(e2){toast(tx('Organisation créée, mais l\'accès administrateur n\'a pas pu être activé : ','Organization created, but administrator access could not be activated: ')+(e2.code||e2.message)+tx(' — utilisez « Accès » sur sa ligne.',' — use "Access" on its row.'))}}
       else{await fb.updateDoc(fb.doc(fb.db,'orgs',id),data);toast(tx('Organisation enregistrée.','Organization saved.'))}
       ST.edit=null;await load()}catch(e){toast(tx('Échec : ','Failed: ')+(e.code||e.message))}}
   root.addEventListener('change',async function(e){if(e.target.id==='pf_logo'&&e.target.files[0]){var d=await readLogo(e.target.files[0]);ST.edit._logo=d;var im=D.getElementById('pf_logoimg');if(im&&d)im.src=d}});
   root.addEventListener('click',async function(e){var b=e.target.closest('[data-pf]');if(!b)return;var a=b.dataset.pf,o=b.dataset.o;
     if(a==='lang'){C.setLang(b.dataset.v);render();return}
-    if(a==='tab'){ST.tab=b.dataset.v;ST.result=null;ST.edit=null;render();return}
+    if(a==='tab'){ST.tab=b.dataset.v;ST.result=null;ST.edit=null;ST.acc=null;render();return}
     if(a==='new'){ST.edit={_new:true};ST.result=null;render();return}
     if(a==='edit'){ST.edit=JSON.parse(JSON.stringify(ST.orgs.find(function(x){return x.id===o})||{}));ST.result=null;render();return}
     if(a==='cancel'){ST.edit=null;render();return}
@@ -1969,16 +2019,30 @@ W.CRM_PLATFORM={open:function(fb,C){
     if(a==='save'){b.disabled=true;await save();b.disabled=false;return}
     if(a==='closeres'){ST.result=null;render();return}
     if(a==='copy'){copy(b.dataset.v);return}
-    if(a==='invite'){var org=ST.orgs.find(function(x){return x.id===o})||{};var users=await orgUsers(o);
-      var admins=users.filter(function(u){return u.role==='admin'&&u.active!==false});
-      var hint=admins.length?admins.map(function(u){return u.username}).join(', '):((org.bootstrapAdmin&&org.bootstrapAdmin.username)||'');
-      var un=prompt(tx('Nom utilisateur de l\'administrateur dans cette organisation (un nouveau mot de passe temporaire sera créé) :','Username of the administrator in this organization (a new temporary password will be created):')+(hint?'\n'+tx('Administrateurs : ','Administrators: ')+hint:''),admins[0]?admins[0].username:hint);if(un===null)return;
-      var nu=C.normUser(un);var u=users.find(function(x){return C.normUser(x.username)===nu});
-      var uid=u?u.id:(!users.length&&org.bootstrapAdmin&&C.normUser(org.bootstrapAdmin.username)===nu?'u0':'');
-      if(!uid){toast(tx('Utilisateur introuvable dans cette organisation.','User not found in this organization.'));return}
-      if(u&&u.role!=='admin'){toast(tx('Cet utilisateur n\'est pas administrateur dans le CRM.','This user is not an administrator in the CRM.'));return}
-      try{var r=await adminAccess(o,uid,nu,u?u.name:(org.bootstrapAdmin&&org.bootstrapAdmin.name)||'');ST.result={title:tx('Accès administrateur — ','Administrator access — ')+(org.name||o),pwd:r.pwd,username:r.username,who:u?u.name:'',short:org.short||''};render()}
-      catch(err){toast(err.code==='conflict'?tx('Ce nom utilisateur est déjà utilisé par une autre organisation.','This username is already used by another organization.'):tx('Échec : ','Failed: ')+(err.code||err.message))}return}
+    if(a==='invite'){await openAccess(o);return}
+    if(a==='accclose'){ST.acc=null;render();load();return}
+    if(a==='accsel'){ST.acc.sel=ST.acc.sel===b.dataset.u?null:b.dataset.u;ST.acc.newAdmin=false;if(!ST.acc.users.some(function(x){return x.id===b.dataset.u})){toast(tx('Utilisateur introuvable dans les données de l\'entreprise.','User not found in the company data.'));ST.acc.sel=null}render();return}
+    if(a==='acccancel'){ST.acc.sel=null;ST.acc.newAdmin=false;render();return}
+    if(a==='accnew'){ST.acc.newAdmin=true;ST.acc.sel=null;render();return}
+    if(a==='reqdel'){try{await fb.deleteDoc(fb.doc(fb.db,'orgs',ST.acc.org,'pwreq',b.dataset.r))}catch(err){}await openAccess(ST.acc.org);return}
+    if(a==='accgo'){var A=ST.acc,u=A.users.find(function(x){return x.id===b.dataset.u}),pv=pwVal();if(!u)return;
+      if(!goodPwd(pv.p)){toast(tx('Mot de passe : 8 caractères minimum, avec des lettres et des chiffres.','Password: at least 8 characters, with letters and digits.'));return}
+      b.disabled=true;var org3=ST.orgs.find(function(x){return x.id===A.org})||{};
+      try{var r=await grant(A.org,u.id,u.username,u.name,levelOf(u),pv.p,pv.def);await openAccess(A.org);ST.acc.sel=null;ST.result={title:tx('Accès activé — ','Access activated — ')+(u.name||r.username),pwd:r.pwd,username:r.username,who:u.name||'',short:org3.short||'',def:r.def,role:levelOf(u)};render()}
+      catch(err){b.disabled=false;toast(errTxt(err))}return}
+    if(a==='newgo'){var A2=ST.acc,nm=val('pa_name'),un2=C.normUser(val('pa_user')),pv2=pwVal();var org4=ST.orgs.find(function(x){return x.id===A2.org})||{};
+      if(!nm||!un2){toast(tx('Nom complet et nom utilisateur requis.','Full name and username required.'));return}
+      if(!goodPwd(pv2.p)){toast(tx('Mot de passe : 8 caractères minimum, avec des lettres et des chiffres.','Password: at least 8 characters, with letters and digits.'));return}
+      if(A2.users.some(function(x){return C.normUser(x.username)===un2})){toast(tx('Ce nom utilisateur existe déjà dans cette entreprise : utilisez « Générer un accès » sur sa ligne.','This username already exists in this company: use "Generate access" on its row.'));return}
+      b.disabled=true;
+      try{var ex=await fb.getDoc(fb.doc(fb.db,'platform','root','unames',un2));if(ex.exists()){var e3=new Error('conflict');e3.code='conflict';throw e3}
+        var uid2;
+        if(A2.fresh){uid2='u0';await fb.updateDoc(fb.doc(fb.db,'orgs',A2.org),{bootstrapAdmin:{name:nm,username:un2}});var oa=A2.accounts.u0;if(oa&&oa.username&&oa.username!==un2){try{await fb.deleteDoc(fb.doc(fb.db,'platform','root','unames',oa.username))}catch(e4){}}}
+        else{uid2='u'+Date.now();var tpl=A2.users.find(function(x){return levelOf(x)==='admin'})||{};
+          await addUserRecord(A2.org,{id:uid2,name:nm,username:un2,title:tx('Administrateur','Administrator'),agentName:'',role:'admin',level:'admin',active:true,perms:tpl.perms||{}})}
+        var r2=await grant(A2.org,uid2,un2,nm,'admin',pv2.p,pv2.def);await load();await openAccess(A2.org);
+        ST.result={title:tx('Administrateur créé — ','Administrator created — ')+nm,pwd:r2.pwd,username:r2.username,who:nm,short:org4.short||'',def:r2.def,role:'admin'};render()}
+      catch(err){b.disabled=false;toast(errTxt(err))}return}
     if(a==='status'){var org2=ST.orgs.find(function(x){return x.id===o});var on=org2.status==='active';if(!confirm(on?tx('Suspendre cette organisation ? Ses appareils perdront l\'accès jusqu\'à la réactivation.','Suspend this organization? Its devices lose access until reactivation.'):tx('Réactiver cette organisation ?','Reactivate this organization?')))return;
       try{await fb.updateDoc(fb.doc(fb.db,'orgs',o),{status:on?'suspended':'active'});await load()}catch(err){toast(tx('Échec : ','Failed: ')+(err.code||err.message))}return}
     if(a==='support'){if(!confirm(tx('Ouvrir l\'espace de cette organisation en mode support ? Vos actions y seront enregistrées comme celles du support de la plateforme.','Open this organization\'s workspace in support mode? Your actions there are recorded as platform support.')))return;try{sessionStorage.setItem('crm-support',o)}catch(err){}location.reload();return}
@@ -2646,7 +2710,8 @@ function commit(){
   const copy=JSON.parse(JSON.stringify(d));
   if(i>=0)DB.users[i]=copy;else DB.users.push(copy);
   if(S.me.id===d.id)S.me=copy;
-  save();S.dirty=false;toast(t('saved'));render();return true;
+  const _pw=d.code,_def=!d.mustChange;
+  save();S.dirty=false;toast(t('saved'));render();if(_pw&&(window.CRM_TENANT&&CRM_TENANT.online&&!CRM_TENANT.support)&&typeof SAAS!=='undefined')SAAS.accessModal(copy.id,_pw,_def);return true;
 }
 
 /* ======================= GLOBAL EVENTS ======================= */
@@ -2665,7 +2730,7 @@ document.addEventListener('click',e=>{
   if(el.hasAttribute('data-preview')){if(S.dirty&&!commit())return;S.viewAs=DB.users.find(x=>x.id===S.draft.id);S.dirty=false;go({v:'hub'});return}
   if(el.dataset.tab){S.tab=el.dataset.tab;rerenderUM();return}
   if(el.dataset.uid){if(S.dirty&&!confirm(t('unsaved')+' — OK ?'))return;loadDraft(el.dataset.uid);rerenderUM();return}
-  if(el.hasAttribute('data-newuser')){S.editId='n'+Date.now();S.draft={id:S.editId,name:'',username:'',code:'',title:'',agentName:'',role:'user',level:'agent',team:'',supervisorId:'',active:true,perms:blankPerms()};S.dirty=true;rerenderUM();const f=$('#main [data-f=name]');if(f)f.focus();return}
+  if(el.hasAttribute('data-newuser')){S.editId='n'+Date.now();S.draft={id:S.editId,name:'',username:'',code:((window.CRM_TENANT&&CRM_TENANT.online)&&window.CRM_BOOT&&CRM_BOOT.genPwd)?CRM_BOOT.genPwd():'',title:'',agentName:'',role:'user',level:'agent',team:'',supervisorId:'',active:true,perms:blankPerms()};S.dirty=true;rerenderUM();const f=$('#main [data-f=name]');if(f)f.focus();return}
   if(el.dataset.level){const lv=el.dataset.level;S.draft.level=lv;S.draft.role=lv==='admin'?'admin':'user';if(!DB.users.some(u=>u.id===S.draft.id)&&lv!=='admin')applyTemplate(S.draft);S.dirty=true;rerenderUM();return}
   if(el.hasAttribute('data-applytpl')){applyTemplate(S.draft);S.dirty=true;rerenderUM();toast(tx('Modèle appliqué — enregistrez pour confirmer.','Template applied — save to confirm.'));return}
   if(el.dataset.role){S.draft.role=el.dataset.role;S.dirty=true;rerenderUM();return}
@@ -10660,7 +10725,13 @@ function supportLogin(){if(!TN.support)return;S.me={id:'__support',name:tx('Supp
   if(!document.getElementById('crmSupport')){const d=document.createElement('div');d.id='crmSupport';d.className='crm-support';d.innerHTML=`🛠 ${tx('Mode support','Support mode')} — <b>${esc(TN.name)}</b> <button class="btn sm" data-sx="exitsupport">${tx('Quitter','Exit')}</button>`;document.body.appendChild(d)}}
 /* ---------- après la reprise de session ---------- */
 function afterSession(){try{dot()}catch(e){}if(TN.support){supportLogin()}
-  if(ON&&!TN.support&&!S.me){const u=DB.users.find(x=>x.id===myId()&&x.active);if(u){S.me=u;$('#login').style.display='none';$('#app').classList.add('on');render()}else{BOOT.signOut&&BOOT.signOut();return}}
+  if(ON&&!TN.support&&!S.me){const u=DB.users.find(x=>x.id===myId()&&x.active);if(u){S.me=u;$('#login').style.display='none';$('#app').classList.add('on');render()}
+    else{/* profil tout juste créé : on récupère les dernières données avant de conclure */
+      let n=0;try{n=+sessionStorage.getItem('crm-retry')||0}catch(e){}
+      if(n<3&&SY()){try{sessionStorage.setItem('crm-retry',String(n+1))}catch(e){}const g=document.getElementById('crmGate');if(g){g.hidden=false;g.innerHTML='<div class="login-card crm-gatecard"><div class="crm-gatebody"><div class="crm-spin"></div><p>'+esc(tx('Préparation de votre profil…','Preparing your profile…'))+'</p></div></div>';document.body.classList.add('crm-gated')}
+        setTimeout(()=>{SY().pull().catch(()=>{}).then(()=>location.reload())},2500);return}
+      try{sessionStorage.removeItem('crm-retry')}catch(e){}BOOT.signOut&&BOOT.signOut();return}}
+  try{sessionStorage.removeItem('crm-retry')}catch(e){}
   try{const r=JSON.parse(sessionStorage.getItem('crm-route')||'null');sessionStorage.removeItem('crm-route');if(r&&S.me)go(r)}catch(e){}
   if(ON&&!TN.support){if(TN.account&&TN.account.mustChange)setTimeout(()=>pwdModal(true),400);
     loadAccounts().then(()=>{if(mgr()&&ACC_OK){if(DB.users.some(u=>u.codeH&&(u.active===false||(ACC[u.id]&&ACC[u.id].cred))))save();loadReq().then(()=>{const n=(ST.req||[]).length;if(n)toast(`🔑 ${n} ${tx('demande(s) de mot de passe — Gestion des utilisateurs → Accès & appareils','password request(s) — User management → Access & devices')}`)})}})}
@@ -10703,7 +10774,7 @@ function reqCard(){const L=ST.req||[];if(!L.length)return '';
     return `<tr><td><b>${esc(u?u.name:r.username)}</b><br><small class="crm-mut">@${esc(r.username)}</small></td><td>${esc(fdt(r.at))}</td><td><small>${esc(r.device||'')}</small></td><td class="crm-pfact">${u?`<button class="btn sm primary" data-sx="reqreset" data-r="${esc(r.id)}" data-u="${esc(u.id)}">${tx('Nouveau mot de passe','New password')}</button>`:''}<button class="btn sm" data-sx="reqdel" data-r="${esc(r.id)}">${tx('Ignorer','Dismiss')}</button></td></tr>`}).join('')}</tbody></table></div></div>`}
 function usersCard(){const users=DB.users.filter(Boolean);const miss=users.filter(u=>u.active!==false&&!(ACC[u.id]&&ACC[u.id].cred)).length;
   const devs=id=>(ST.members||[]).filter(m=>m.userId===id&&m.status==='active'&&m.cred).length;
-  return `<div class="card" style="margin-bottom:12px"><div class="head"><h3>${tx('Accès en ligne des utilisateurs','Users\' online access')}</h3>${miss&&mgr()?`<button class="btn sm primary" data-sx="bulk">${tx('Créer les accès manquants','Create missing access')} (${miss})</button>`:''}</div>
+  return `<div class="card" style="margin-bottom:12px"><div class="head"><h3>${tx('Accès en ligne des utilisateurs','Users\' online access')}</h3><span>${mgr()?`<button class="btn sm" data-sx="newuser">＋ ${tx('Nouvel utilisateur','New user')}</button> `:''}${miss&&mgr()?`<button class="btn sm primary" data-sx="bulk">${tx('Créer les accès manquants','Create missing access')} (${miss})</button>`:''}</span></div>
   <p class="crm-mut">${tx('Pour se connecter, un utilisateur a seulement besoin de l\'adresse habituelle de la plateforme, de son nom utilisateur et de son mot de passe. Chaque nouvel appareil est enregistré automatiquement. Un utilisateur non administrateur ne peut avoir qu\'une session ouverte à la fois : une nouvelle connexion ferme la précédente. Les noms utilisateur sont uniques sur toute la plateforme.','To sign in, a user only needs the usual platform address, their username and their password. Each new device is registered automatically. A non-administrator user can only have one open session at a time: a new sign-in closes the previous one. Usernames are unique across the whole platform.')}</p>
   ${!ST.acc?`<p class="crm-mut">${tx('Chargement…','Loading…')}</p>`:`<div class="tw"><table class="dt"><thead><tr><th>${tx('Utilisateur','User')}</th><th>${tx('Niveau','Level')}</th><th>${tx('Accès en ligne','Online access')}</th><th>${tx('Dernière connexion','Last sign-in')}</th><th>${tx('Appareils','Devices')}</th><th></th></tr></thead><tbody>${users.map(u=>{const st=accStatus(u),a=ACC[u.id];
     return `<tr><td><b>${esc(u.name)}</b><br><small class="crm-mut">@${esc(NU(u.username))}${u.active===false?' · off':''}</small></td><td>${esc(roleL(levelOf(u)))}</td><td>${pill(st[0],st[1])}</td><td>${esc(a?fdt(a.sessionAt):'')}</td><td>${devs(u.id)||''}</td>
@@ -10712,7 +10783,7 @@ function pwForm(u){const p=genPwd();return `<div class="crm-pwform"><div class="
   <div class="field"><label>${tx('Type','Type')}</label><label class="crm-chk"><input type="radio" name="sx_pt" value="tmp" checked> ${tx('Temporaire — à changer à la première connexion','Temporary — to change at first sign-in')}</label><label class="crm-chk"><input type="radio" name="sx_pt" value="def"> ${tx('Définitif — aucun changement imposé','Permanent — no change required')}</label></div></div>
   <p class="crm-mut">${tx('8 caractères minimum, avec des lettres et des chiffres. Le mot de passe actuel de cet utilisateur cesse de fonctionner et ses appareils sont déconnectés.','At least 8 characters, with letters and digits. This user\'s current password stops working and their devices are signed out.')}</p>
   <div class="crm-pfbtns"><button class="btn" data-sx="pwcancel">${tx('Annuler','Cancel')}</button><button class="btn primary" data-sx="pwapply" data-u="${esc(u.id)}">${tx('Enregistrer le mot de passe','Save password')}</button></div></div>`}
-function inviteMsg(u,pwd,def){const link=location.href.split('#')[0];const nm=String(TN.short||'').toUpperCase();
+function inviteMsg(u,pwd,def){const link=location.href.split('#')[0]+'#crm-login='+encodeURIComponent(NU(u.username));const nm=String(TN.short||'').toUpperCase();
   return tx(`Bonjour ${u.name},\n\nVotre accès à Distribution CRM${nm?' '+nm:''} :\nLien : ${link}\nNom utilisateur : ${NU(u.username)}\nMot de passe${def?'':' temporaire'} : ${pwd}\n${def?'':'Vous choisirez votre mot de passe personnel à la première connexion.\n'}\nNe transmettez ce message à personne.`,
     `Hello ${u.name},\n\nYour access to Distribution CRM${nm?' '+nm:''}:\nLink: ${link}\nUsername: ${NU(u.username)}\n${def?'Password':'Temporary password'}: ${pwd}\n${def?'':'You will choose your personal password at first sign-in.\n'}\nDo not share this message with anyone.`)}
 function resCard(){const L=ST.res.list;const one=L.length===1?L[0]:null;
@@ -10758,6 +10829,7 @@ document.addEventListener('click',async e=>{const b=e.target.closest('[data-sx]'
   if(a==='closeres'){ST.res=null;rerenderUM();return}
   if(a==='csv'){csv();return}
   if(a==='export'){exportAll();return}
+  if(a==='newuser'){S.tab='users';S.editId='n'+Date.now();S.draft={id:S.editId,name:'',username:'',code:genPwd(),title:'',agentName:'',role:'user',level:'agent',team:'',supervisorId:'',active:true,perms:blankPerms()};S.dirty=true;rerenderUM();const f=$('#main [data-f=name]');if(f)f.focus();return}
   if(a==='pwform'){ST.edit=ST.edit===b.dataset.u?null:b.dataset.u;rerenderUM();return}
   if(a==='pwcancel'){ST.edit=null;rerenderUM();return}
   if(a==='pwapply'){const u=DB.users.find(x=>x.id===b.dataset.u);const pwd=(document.getElementById('sx_pw')||{}).value||'';const def=(document.querySelector('input[name="sx_pt"]:checked')||{}).value==='def';
@@ -10778,7 +10850,14 @@ document.addEventListener('click',async e=>{const b=e.target.closest('[data-sx]'
     for(const m of L){try{await setMember(m.uid,{status:'signedout'},'close-legacy')}catch(err){}}ST.members=null;ST.acc=false;rerenderUM();return}});
 document.addEventListener('change',e=>{const el=e.target;if(!el.closest||!el.closest('.crm-dev'))return;
   if(el.dataset.sx==='import'&&el.files[0]){importFile(el.files[0]);el.value=''}});
-return {devicesView,afterSession,deviceUserOk,dot,beforeSave,pwdSave,ON,mgr,flushPub:()=>PUB,acc:()=>ACC}})();
+async function accessModal(id,pwd,def){if(!ON||!pwd)return;await PUB;const u=DB.users.find(x=>x.id===id);if(!u)return;const p=LP[id];
+  if(!(p&&p.ok)){if(p&&p.err&&p.err!=='conflict')toast(tx('Accès en ligne non activé : ','Online access not activated: ')+p.err);return}
+  const msg=inviteMsg(u,pwd,def);const ph=String(u.phone||'').replace(/\D/g,'').replace(/^(\d{8})$/,'509$1');
+  openModal(`<div class="modalhead"><h3>✅ ${tx('Accès actif','Access active')} — ${esc(u.name)}</h3><button class="btn" data-mact="close">✕</button></div>
+   <p class="pnote">${tx('Le mot de passe n\'est affiché qu\'une seule fois : transmettez ce message maintenant, par un canal privé.','The password is shown only once: send this message now, through a private channel.')}</p>
+   <div class="crm-dev"><textarea class="input" rows="9" readonly style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px">${esc(msg)}</textarea>
+   <div class="crm-pfbtns"><button class="btn" data-sx="copy" data-v="${esc(msg)}">${tx('Copier le message','Copy message')}</button><a class="btn" target="_blank" rel="noopener" href="https://wa.me/${ph}?text=${encodeURIComponent(msg)}">WhatsApp</a><a class="btn" href="mailto:${esc(u.email||'')}?subject=${encodeURIComponent('Distribution CRM')}&body=${encodeURIComponent(msg)}">${tx('Courriel','Email')}</a></div></div>`,true)}
+return {accessModal,devicesView,afterSession,deviceUserOk,dot,beforeSave,pwdSave,ON,mgr,flushPub:()=>PUB,acc:()=>ACC}})();
 
 const _go16=go;go=function(){try{if(window.CRM_SYNC)CRM_SYNC.formReset()}catch(e){}return _go16.apply(this,arguments)};
 /* =====================================================================
